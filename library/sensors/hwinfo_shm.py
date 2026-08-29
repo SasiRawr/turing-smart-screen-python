@@ -23,8 +23,8 @@ Why this exists
 The LibreHardwareMonitor backend depends on pythonnet, which supports Python
 3.7-3.13 only. On a 3.14 install there is no wheel and no LHM path at all.
 HWiNFO instead publishes its whole sensor tree into a named shared memory
-block, which `mmap` can read directly -- no native extension, no .NET, and it
-works on any Python version.
+block, which stdlib `ctypes` can map and read directly -- no native extension,
+no .NET, no third-party package, and it works on any Python version.
 
 Requirements on the target machine
 ----------------------------------
@@ -41,12 +41,33 @@ because a layout change would otherwise produce plausible-looking garbage.
 """
 
 import ctypes
-import mmap
 import sys
 from typing import Dict, List, NamedTuple, Optional
 
 HWINFO_SHM_NAME = r"Global\HWiNFO_SENS_SM2"
 HWINFO_MUTEX_NAME = r"Global\HWiNFO_SM2_MUTEX"
+
+# Win32 section-mapping API, used instead of mmap so that a missing section is
+# reported rather than silently created -- see _open_mapping below.
+FILE_MAP_READ = 0x0004
+ERROR_FILE_NOT_FOUND = 2
+
+if sys.platform == "win32":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenFileMappingW.argtypes = (
+        ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p)
+    _kernel32.OpenFileMappingW.restype = ctypes.c_void_p
+    # restype must be c_void_p: the default c_int truncates a 64-bit address.
+    _kernel32.MapViewOfFile.argtypes = (
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_size_t)
+    _kernel32.MapViewOfFile.restype = ctypes.c_void_p
+    _kernel32.UnmapViewOfFile.argtypes = (ctypes.c_void_p,)
+    _kernel32.UnmapViewOfFile.restype = ctypes.c_int
+    _kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    _kernel32.CloseHandle.restype = ctypes.c_int
+else:
+    _kernel32 = None
 
 # "HWiS" little-endian: the active-interface marker. HWiNFO writes "DEAD" here
 # when it shuts the interface down.
@@ -136,15 +157,71 @@ def _decode(raw: bytes) -> str:
     return raw.split(b"\x00", 1)[0].decode("latin-1", errors="replace").strip()
 
 
-def _open_mapping(size: int) -> mmap.mmap:
-    try:
-        return mmap.mmap(-1, size, tagname=HWINFO_SHM_NAME, access=mmap.ACCESS_READ)
-    except (OSError, ValueError) as exc:
+class _MappedView:
+    """Read-only view of an existing named section.
+
+    Exposes only the read/close surface the callers below need, so it drops in
+    where an mmap object used to be.
+    """
+
+    def __init__(self, handle, address, size):
+        self._handle = handle
+        self._address = address
+        self._size = size
+
+    def read(self, count: int) -> bytes:
+        return ctypes.string_at(self._address, min(count, self._size))
+
+    def close(self) -> None:
+        if self._address:
+            _kernel32.UnmapViewOfFile(self._address)
+            self._address = None
+        if self._handle:
+            _kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
+def _open_mapping(size: int) -> _MappedView:
+    # Do NOT use mmap.mmap(-1, size, tagname=...) here. On Windows that maps the
+    # page file and CREATES the named section when it does not already exist, so
+    # it succeeds even with HWiNFO not running -- handing back a zero-filled
+    # block that then fails the signature check as "found but not active". That
+    # sends you to the Shared Memory checkbox when the real problem is that
+    # HWiNFO is not running at all. It also squats on HWiNFO's well-known name
+    # for as long as the handle is held, which risks HWiNFO later opening our
+    # empty section instead of publishing its own.
+    #
+    # OpenFileMappingW has no create semantics, so absence is reported as
+    # absence. Verified on this machine: with HWiNFO stopped, the mmap call
+    # opened a section for a name that could not possibly exist.
+    if _kernel32 is None:
+        raise HWiNFOUnavailable("HWiNFO shared memory is Windows-only.")
+
+    handle = _kernel32.OpenFileMappingW(FILE_MAP_READ, False, HWINFO_SHM_NAME)
+    if not handle:
+        err = ctypes.get_last_error()
+        if err == ERROR_FILE_NOT_FOUND:
+            raise HWiNFOUnavailable(
+                "%s does not exist. HWiNFO is not running, or is running without "
+                "Shared Memory Support. Start HWiNFO64, then tick Settings -> Main "
+                "Settings -> Shared Memory Support and leave it running. (On the "
+                "free edition that setting switches itself off after ~12 hours.)"
+                % HWINFO_SHM_NAME
+            )
         raise HWiNFOUnavailable(
-            "Could not open %s. Is HWiNFO running with Shared Memory Support enabled? "
-            "(On the free edition that setting turns itself off after ~12 hours.)"
-            % HWINFO_SHM_NAME
-        ) from exc
+            "OpenFileMapping(%s) failed with Windows error %d." % (HWINFO_SHM_NAME, err)
+        )
+
+    address = _kernel32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size)
+    if not address:
+        err = ctypes.get_last_error()
+        _kernel32.CloseHandle(handle)
+        raise HWiNFOUnavailable(
+            "MapViewOfFile(%s, %d bytes) failed with Windows error %d."
+            % (HWINFO_SHM_NAME, size, err)
+        )
+
+    return _MappedView(handle, address, size)
 
 
 def read_all() -> List[Reading]:
