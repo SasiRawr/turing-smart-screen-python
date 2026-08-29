@@ -134,8 +134,14 @@ class ExampleCustomTextOnlyData(CustomDataSource):
 
 LOOP_SENSORS = {
     # logical name -> (hardware node substring, exact sensor name)
-    "coolant_hot": ("Quadro", "Sensor 1"),   # pump outlet -> radiator inlet
-    "coolant_cold": ("Quadro", "Sensor 2"),  # radiator outlet -> pump inlet
+    #
+    # Defaults target an ASUS ROG Crosshair VIII Dark Hero, which has dedicated
+    # W_IN / W_OUT water-temperature headers feeding the ASUS EC. Confirm the
+    # exact labels with the discovery command below -- ROG boards have shipped
+    # these as "Water Temperature (In)", "Water_In", and plain "Temperature 4"
+    # depending on board and HWiNFO version.
+    "coolant_hot": ("Crosshair", "Water Temperature (In)"),
+    "coolant_cold": ("Crosshair", "Water Temperature (Out)"),
 }
 
 # Number of samples retained for line graphs.
@@ -157,16 +163,48 @@ def _iter_hardware(nodes):
         yield from _iter_hardware(node.SubHardware)
 
 
-def read_loop_temperature(key: str):
-    # Returns degrees Celsius, or None when the sensor is unavailable.
-    mod = _lhm_module()
-    if mod is None:
+def _hwinfo():
+    # Imported lazily and defensively: the module is Windows-only and its import
+    # must never take down a SIMU/STUB session on another platform.
+    try:
+        from library.sensors import hwinfo_shm
+        return hwinfo_shm
+    except Exception:
         return None
 
+
+def active_backend() -> str:
+    # Which source is actually supplying values right now.
+    hwinfo = _hwinfo()
+    if hwinfo is not None and hwinfo.is_available():
+        return "hwinfo"
+    if _lhm_module() is not None:
+        return "lhm"
+    return "none"
+
+
+def read_loop_temperature(key: str):
+    # Returns degrees Celsius, or None when the sensor is unavailable.
     try:
         hw_match, sensor_name = LOOP_SENSORS[key]
     except KeyError:
         logger.warning("No LOOP_SENSORS entry named '%s'", key)
+        return None
+
+    # HWiNFO first: it needs no native extension, so it works where the
+    # LibreHardwareMonitor backend cannot be installed at all (pythonnet has no
+    # wheels beyond Python 3.13).
+    hwinfo = _hwinfo()
+    if hwinfo is not None:
+        try:
+            value = hwinfo.find_reading(hw_match, sensor_name, kind="temperature")
+            if value is not None:
+                return value
+        except hwinfo.HWiNFOUnavailable:
+            pass  # fall through to LHM
+
+    mod = _lhm_module()
+    if mod is None:
         return None
 
     needle = hw_match.lower()
@@ -270,26 +308,64 @@ class LoopStatus(CustomDataSource):
         pass
 
     def as_string(self) -> str:
-        if _lhm_module() is None:
+        backend = active_backend()
+        if backend == "none":
             return "SIMULATED"
         missing = [k for k in LOOP_SENSORS if read_loop_temperature(k) is None]
         if missing:
             return "PROBE MISSING: " + ", ".join(missing)
-        return "LOOP OK"
+        return "LOOP OK / " + backend.upper()
 
     def last_values(self) -> List[float]:
         pass
 
 
 if __name__ == "__main__":
-    # Run this on the target machine, as administrator, to discover sensor
-    # names:  python -m library.sensors.sensors_custom
-    import library.sensors.sensors_librehardwaremonitor  # noqa: F401  (Windows only)
+    # Sensor discovery. Run on the target machine:
+    #     python -m library.sensors.sensors_custom
+    #
+    # Tries HWiNFO shared memory first -- it needs no third-party packages and
+    # no elevation, so it works on a bare Python install. Falls back to
+    # LibreHardwareMonitor only if pythonnet is actually present.
+    print("Probing available sensor backends...\n")
 
-    sensors_found = list_temperature_sensors()
-    if not sensors_found:
-        print("No temperature sensors found. Are you running as administrator on Windows?")
+    printed_any = False
+
+    hwinfo = _hwinfo()
+    if hwinfo is not None:
+        try:
+            readings = hwinfo.read_all()
+            temps = [r for r in readings if r.kind == "temperature"]
+            print("HWiNFO shared memory: %d readings, %d of them temperatures.\n"
+                  % (len(readings), len(temps)))
+            print("Temperature readings -- paste the ones you want into LOOP_SENSORS:\n")
+            for r in sorted(temps, key=lambda x: (x.sensor, x.label)):
+                print('    ("%s", "%s")  # currently %.1f %s' % (r.sensor, r.label, r.value, r.unit))
+            print("\nFan readings (for reference):\n")
+            for r in sorted((r for r in readings if r.kind == "fan"),
+                            key=lambda x: (x.sensor, x.label)):
+                print('    ("%s", "%s")  # currently %.0f %s' % (r.sensor, r.label, r.value, r.unit))
+            printed_any = True
+        except hwinfo.HWiNFOUnavailable as err:
+            print("HWiNFO shared memory unavailable: %s\n" % err)
     else:
-        print(f"{len(sensors_found)} temperature sensor(s) visible to LibreHardwareMonitor:\n")
-        for line in sensors_found:
+        print("HWiNFO reader could not be imported.\n")
+
+    try:
+        import library.sensors.sensors_librehardwaremonitor  # noqa: F401  (Windows + pythonnet)
+    except ImportError as err:
+        print("LibreHardwareMonitor backend unavailable: %s" % err)
+        print("(Expected on Python 3.14 -- pythonnet ships wheels for 3.7-3.13 only.)")
+    else:
+        lhm_found = list_temperature_sensors()
+        print("\nLibreHardwareMonitor: %d temperature sensor(s):\n" % len(lhm_found))
+        for line in lhm_found:
             print("    " + line)
+        printed_any = printed_any or bool(lhm_found)
+
+    if not printed_any:
+        print("\nNo sensor source is currently readable. To use HWiNFO:")
+        print("  1. Start HWiNFO64.")
+        print("  2. Settings -> Main Settings -> tick 'Shared Memory Support'.")
+        print("  3. Leave it running, then re-run this command.")
+        print("  Note: on the free edition that setting switches itself off after ~12 hours.")

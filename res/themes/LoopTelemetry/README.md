@@ -27,30 +27,42 @@ Edit `LOOP_SENSORS` at the bottom of `library/sensors/sensors_custom.py`:
 
 ```python
 LOOP_SENSORS = {
-    "coolant_hot":  ("Quadro", "Sensor 1"),   # pump outlet -> radiator inlet
-    "coolant_cold": ("Quadro", "Sensor 2"),   # radiator outlet -> pump inlet
+    "coolant_hot":  ("Crosshair", "Water Temperature (In)"),
+    "coolant_cold": ("Crosshair", "Water Temperature (Out)"),
 }
 ```
 
 The first element is a case-insensitive substring of the hardware node name,
 the second is the exact sensor name beneath it.
 
-To discover the real names, run this on the target machine **as
-administrator**:
+To discover the real names, run this on the target machine:
 
 ```
 python -m library.sensors.sensors_custom
 ```
 
-It prints every temperature sensor LibreHardwareMonitor can see, already
-formatted so the lines can be pasted straight into `LOOP_SENSORS`.
+It probes both backends, prints every temperature and fan reading it can see,
+and formats them ready to paste into `LOOP_SENSORS`. No third-party packages
+and no elevation are needed for the HWiNFO path.
+
+### Sensor backends
+
+| Backend | Needs | Notes |
+| --- | --- | --- |
+| HWiNFO shared memory | HWiNFO running with **Shared Memory Support** enabled | Preferred. Stdlib `mmap` only, so it works on any Python version. Free edition disables the setting after ~12 hours; Pro removes the limit. |
+| LibreHardwareMonitor | `pythonnet`, Windows, administrator | Only available on Python 3.7–3.13 — pythonnet publishes no 3.14 wheels. |
+| Simulated | nothing | Fallback. Status line reads `SIMULATED`. |
 
 Typical entries:
 
 | Source | Looks like |
 | --- | --- |
-| Motherboard `T_SENSOR` header | `("Nuvoton", "Temperature #2")` |
+| ROG `W_IN` / `W_OUT` water headers | `("Crosshair", "Water Temperature (In)")` |
+| Generic `T_SENSOR` header | `("Nuvoton", "Temperature 4")` |
 | Aquacomputer Quadro | `("Quadro", "Sensor 1")` |
+
+Exact labels vary by board and HWiNFO version — always confirm with the
+discovery command rather than trusting the table.
 
 ### 2. Select the theme
 
@@ -59,10 +71,14 @@ In `config.yaml`:
 ```yaml
 config:
   THEME: LoopTelemetry
-  HW_SENSORS: LHM      # Windows, must run as administrator
+  HW_SENSORS: PYTHON   # or LHM, if pythonnet is installable on your Python
 display:
   REVISION: A          # whichever revision your panel actually is
 ```
+
+The coolant sensors pick their own source and do not depend on `HW_SENSORS`.
+They try **HWiNFO shared memory** first, fall back to LibreHardwareMonitor, and
+otherwise simulate. `HW_SENSORS` only governs the built-in CPU/GPU stats.
 
 ## Developing without the panel
 
@@ -81,9 +97,10 @@ driving hardware, so the layout can be iterated on any machine.
 
 | Status | Meaning |
 | --- | --- |
-| `LOOP OK` | Both probes reporting |
+| `LOOP OK / HWINFO` | Both probes reporting, via HWiNFO shared memory |
+| `LOOP OK / LHM` | Both probes reporting, via LibreHardwareMonitor |
 | `PROBE MISSING: coolant_hot` | Named probe is configured but not returning a value |
-| `SIMULATED` | Not running under `HW_SENSORS: LHM` — the coolant figures on screen are a generated sweep, not real measurements |
+| `SIMULATED` | No sensor backend readable — the coolant figures on screen are a generated sweep, not real measurements |
 
 `SIMULATED` is deliberately loud. A dashboard that invents plausible
 temperatures without saying so is worse than one that shows nothing.
