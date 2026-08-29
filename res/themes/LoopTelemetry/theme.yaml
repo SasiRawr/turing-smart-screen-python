@@ -42,17 +42,9 @@ static_text:
     FONT_COLOR: 90, 160, 185
     BACKGROUND_IMAGE: background.png
   HOT_LABEL:
-    TEXT: "RAD IN"
+    TEXT: "LIQUID"
     X: 20
     Y: 212
-    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
-    FONT_SIZE: 12
-    FONT_COLOR: 110, 125, 135
-    BACKGROUND_IMAGE: background.png
-  COLD_LABEL:
-    TEXT: "RAD OUT"
-    X: 20
-    Y: 264
     FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
     FONT_SIZE: 12
     FONT_COLOR: 110, 125, 135
@@ -157,7 +149,7 @@ STATS:
         FONT_COLOR: 226, 150, 60
         BACKGROUND_IMAGE: background.png
 
-    CoolantHot:
+    CoolantLiquid:
       TEXT:
         SHOW: True
         X: 20
@@ -182,9 +174,34 @@ STATS:
         AXIS_FONT_SIZE: 9
         BACKGROUND_IMAGE: background.png
 
+    CoolantHot:
+      TEXT:
+        SHOW: False
+        X: 20
+        Y: 228
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 28
+        FONT_COLOR: 232, 148, 96
+        BACKGROUND_IMAGE: background.png
+      LINE_GRAPH:
+        SHOW: False
+        X: 176
+        Y: 212
+        WIDTH: 172
+        HEIGHT: 44
+        MIN_VALUE: 20
+        MAX_VALUE: 50
+        AUTOSCALE: False
+        LINE_COLOR: 232, 148, 96
+        AXIS: True
+        AXIS_COLOR: 70, 84, 92
+        AXIS_FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        AXIS_FONT_SIZE: 9
+        BACKGROUND_IMAGE: background.png
+
     CoolantCold:
       TEXT:
-        SHOW: True
+        SHOW: False
         X: 20
         Y: 280
         FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
@@ -192,7 +209,7 @@ STATS:
         FONT_COLOR: 96, 186, 232
         BACKGROUND_IMAGE: background.png
       LINE_GRAPH:
-        SHOW: True
+        SHOW: False
         X: 176
         Y: 264
         WIDTH: 172

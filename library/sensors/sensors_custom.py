@@ -132,17 +132,38 @@ class ExampleCustomTextOnlyData(CustomDataSource):
 #   print every temperature sensor LibreHardwareMonitor can see, then copy the
 #   names you want from that listing.
 
+# Which coolant topology is physically installed right now.
+#
+#   "single"  An AIO that reports its own liquid temperature over USB (e.g. an
+#             NZXT Kraken Z). One reading, no delta-T possible.
+#   "dual"    Two thermistors on the tubing, hot line and cold line, read via
+#             the board's W_IN / W_OUT headers. Delta-T available.
+#
+# GAMING currently runs a Kraken Z, so: "single". Switch to "dual" once the
+# Arctic Liquid Freezer III Pro is fitted and the probes are in.
+LOOP_MODE = "single"
+
 LOOP_SENSORS = {
     # logical name -> (hardware node substring, exact sensor name)
     #
-    # Defaults target an ASUS ROG Crosshair VIII Dark Hero, which has dedicated
-    # W_IN / W_OUT water-temperature headers feeding the ASUS EC. Confirm the
-    # exact labels with the discovery command below -- ROG boards have shipped
-    # these as "Water Temperature (In)", "Water_In", and plain "Temperature 4"
-    # depending on board and HWiNFO version.
+    # Used in "single" mode. An NZXT Kraken publishes its own coolant
+    # temperature; confirm the exact label with the discovery command.
+    "coolant_single": ("Kraken", "Liquid Temperature"),
+
+    # Used in "dual" mode. Targets the ASUS ROG Crosshair VIII Dark Hero's
+    # dedicated W_IN / W_OUT water-temperature headers. ROG boards have shipped
+    # these as "Water Temperature (In)", "Water_In" and plain "Temperature 4"
+    # depending on board and HWiNFO version -- confirm before trusting.
     "coolant_hot": ("Crosshair", "Water Temperature (In)"),
     "coolant_cold": ("Crosshair", "Water Temperature (Out)"),
 }
+
+
+def active_sensor_keys() -> List[str]:
+    # Only the probes the current topology actually has.
+    if LOOP_MODE == "single":
+        return ["coolant_single"]
+    return ["coolant_hot", "coolant_cold"]
 
 # Number of samples retained for line graphs.
 HISTORY_DEPTH = 10
@@ -279,6 +300,13 @@ class CoolantCold(_LoopTemperature):
     SIMULATED_BASE = 30.5
 
 
+class CoolantLiquid(_LoopTemperature):
+    # Single coolant temperature reported by the AIO itself. Used in "single"
+    # mode; reads nothing in "dual" mode.
+    SENSOR_KEY = "coolant_single"
+    SIMULATED_BASE = 32.0
+
+
 class RadiatorDeltaT(CustomDataSource):
     # Temperature drop across the radiator. Rises with heat load and falls as
     # the fans catch up, so it reads as "how hard the loop is working" in a way
@@ -289,12 +317,18 @@ class RadiatorDeltaT(CustomDataSource):
         self._cold = CoolantCold()
 
     def as_numeric(self) -> float:
+        if LOOP_MODE != "dual":
+            # One probe cannot produce a difference. Return a floor value so the
+            # radial still draws, and let as_string() say why it is empty.
+            return 0.0
         delta = self._hot.as_numeric() - self._cold.as_numeric()
         self.last_val.append(delta)
         self.last_val.pop(0)
         return delta
 
     def as_string(self) -> str:
+        if LOOP_MODE != "dual":
+            return "--"
         return f"{self.as_numeric():.1f}"
 
     def last_values(self) -> List[float]:
@@ -311,10 +345,11 @@ class LoopStatus(CustomDataSource):
         backend = active_backend()
         if backend == "none":
             return "SIMULATED"
-        missing = [k for k in LOOP_SENSORS if read_loop_temperature(k) is None]
+        missing = [k for k in active_sensor_keys() if read_loop_temperature(k) is None]
         if missing:
             return "PROBE MISSING: " + ", ".join(missing)
-        return "LOOP OK / " + backend.upper()
+        label = "AIO" if LOOP_MODE == "single" else "LOOP"
+        return f"{label} OK / {backend.upper()}"
 
     def last_values(self) -> List[float]:
         pass
