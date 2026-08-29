@@ -1,0 +1,230 @@
+---
+author: "SasiRawr"
+
+# Loop Telemetry -- 480x320 landscape
+#
+# Top band    : status line + clock
+# Left panel  : CPU load / temp
+# Right panel : GPU load / temp
+# Bottom band : coolant hot, coolant cold, radiator delta-T radial
+#
+# The three coolant readings come from library/sensors/sensors_custom.py.
+# Configure LOOP_SENSORS in that file to match your probe names; until you do,
+# they sweep a simulated value and the status line reads SIMULATED.
+
+display:
+  DISPLAY_ORIENTATION: landscape
+  DISPLAY_RGB_LED: 40, 120, 150
+
+static_images:
+  BACKGROUND:
+    PATH: background.png
+    X: 0
+    Y: 0
+    WIDTH: 480
+    HEIGHT: 320
+
+static_text:
+  CPU_LABEL:
+    TEXT: "CPU"
+    X: 20
+    Y: 58
+    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+    FONT_SIZE: 15
+    FONT_COLOR: 90, 160, 185
+    BACKGROUND_IMAGE: background.png
+  GPU_LABEL:
+    TEXT: "GPU"
+    X: 258
+    Y: 58
+    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+    FONT_SIZE: 15
+    FONT_COLOR: 90, 160, 185
+    BACKGROUND_IMAGE: background.png
+  HOT_LABEL:
+    TEXT: "RAD IN"
+    X: 20
+    Y: 212
+    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+    FONT_SIZE: 12
+    FONT_COLOR: 110, 125, 135
+    BACKGROUND_IMAGE: background.png
+  COLD_LABEL:
+    TEXT: "RAD OUT"
+    X: 20
+    Y: 264
+    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+    FONT_SIZE: 12
+    FONT_COLOR: 110, 125, 135
+    BACKGROUND_IMAGE: background.png
+  DELTA_LABEL:
+    TEXT: "DELTA-T"
+    X: 380
+    Y: 288
+    FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+    FONT_SIZE: 12
+    FONT_COLOR: 110, 125, 135
+    BACKGROUND_IMAGE: background.png
+
+STATS:
+  DATE:
+    INTERVAL: 1
+    HOUR:
+      TEXT:
+        SHOW: True
+        X: 344
+        Y: 14
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 20
+        FONT_COLOR: 200, 214, 222
+        BACKGROUND_IMAGE: background.png
+
+  CPU:
+    PERCENTAGE:
+      INTERVAL: 1
+      TEXT:
+        SHOW: True
+        X: 20
+        Y: 80
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 34
+        FONT_COLOR: 226, 236, 241
+        BACKGROUND_IMAGE: background.png
+      GRAPH:
+        SHOW: True
+        X: 20
+        Y: 124
+        WIDTH: 196
+        HEIGHT: 12
+        MIN_VALUE: 0
+        MAX_VALUE: 100
+        BAR_COLOR: 61, 184, 225
+        BAR_OUTLINE: False
+        BACKGROUND_IMAGE: background.png
+    TEMPERATURE:
+      INTERVAL: 2
+      TEXT:
+        SHOW: True
+        X: 20
+        Y: 146
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 24
+        FONT_COLOR: 150, 205, 225
+        BACKGROUND_IMAGE: background.png
+
+  GPU:
+    INTERVAL: 2
+    PERCENTAGE:
+      TEXT:
+        SHOW: True
+        X: 258
+        Y: 80
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 34
+        FONT_COLOR: 226, 236, 241
+        BACKGROUND_IMAGE: background.png
+      GRAPH:
+        SHOW: True
+        X: 258
+        Y: 124
+        WIDTH: 196
+        HEIGHT: 12
+        MIN_VALUE: 0
+        MAX_VALUE: 100
+        BAR_COLOR: 61, 184, 225
+        BAR_OUTLINE: False
+        BACKGROUND_IMAGE: background.png
+    TEMPERATURE:
+      TEXT:
+        SHOW: True
+        X: 258
+        Y: 146
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 24
+        FONT_COLOR: 150, 205, 225
+        BACKGROUND_IMAGE: background.png
+
+  CUSTOM:
+    INTERVAL: 2
+
+    LoopStatus:
+      TEXT:
+        SHOW: True
+        X: 20
+        Y: 16
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 16
+        FONT_COLOR: 226, 150, 60
+        BACKGROUND_IMAGE: background.png
+
+    CoolantHot:
+      TEXT:
+        SHOW: True
+        X: 20
+        Y: 228
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 28
+        FONT_COLOR: 232, 148, 96
+        BACKGROUND_IMAGE: background.png
+      LINE_GRAPH:
+        SHOW: True
+        X: 176
+        Y: 212
+        WIDTH: 172
+        HEIGHT: 44
+        MIN_VALUE: 20
+        MAX_VALUE: 50
+        AUTOSCALE: False
+        LINE_COLOR: 232, 148, 96
+        AXIS: True
+        AXIS_COLOR: 70, 84, 92
+        AXIS_FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        AXIS_FONT_SIZE: 9
+        BACKGROUND_IMAGE: background.png
+
+    CoolantCold:
+      TEXT:
+        SHOW: True
+        X: 20
+        Y: 280
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 28
+        FONT_COLOR: 96, 186, 232
+        BACKGROUND_IMAGE: background.png
+      LINE_GRAPH:
+        SHOW: True
+        X: 176
+        Y: 264
+        WIDTH: 172
+        HEIGHT: 44
+        MIN_VALUE: 20
+        MAX_VALUE: 50
+        AUTOSCALE: False
+        LINE_COLOR: 96, 186, 232
+        AXIS: True
+        AXIS_COLOR: 70, 84, 92
+        AXIS_FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        AXIS_FONT_SIZE: 9
+        BACKGROUND_IMAGE: background.png
+
+    RadiatorDeltaT:
+      RADIAL:
+        SHOW: True
+        X: 372
+        Y: 208
+        RADIUS: 44
+        WIDTH: 12
+        MIN_VALUE: 0
+        MAX_VALUE: 15
+        ANGLE_START: 120
+        ANGLE_END: 60
+        ANGLE_STEPS: 1
+        ANGLE_SEP: 20
+        CLOCKWISE: True
+        BAR_COLOR: 226, 150, 60
+        SHOW_TEXT: True
+        SHOW_UNIT: False
+        FONT: jetbrains-mono/JetBrainsMono-Bold.ttf
+        FONT_SIZE: 22
+        FONT_COLOR: 226, 236, 241
+        BACKGROUND_IMAGE: background.png
