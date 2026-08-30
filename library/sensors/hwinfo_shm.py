@@ -246,21 +246,30 @@ def read_all() -> List[Reading]:
             "limit has expired -- re-enable Shared Memory Support." % header.dwSignature
         )
 
-    # Refuse to guess if the SDK layout ever changes: wrong sizes would decode
-    # into believable nonsense, which is worse than an error.
+    # HWiNFO grows these structs by APPENDING fields, so a larger element than we
+    # know about is fine: every field we read still sits at the same offset, and
+    # the stride below uses the header's declared size rather than ours. HWiNFO
+    # 8.52 does exactly this -- it added UTF-8 twins of the existing strings,
+    # taking the sensor element 264 -> 392 (+128) and the reading element
+    # 316 -> 460 (+128 label +16 unit). Verified against 8.52 on this machine:
+    # sensor names, labels, units and values all decode correctly.
+    #
+    # A SMALLER element than we expect is a different matter -- we would read off
+    # the end of each record into the next one and produce believable nonsense --
+    # so that still refuses to guess.
     expected_sensor = ctypes.sizeof(_SensorElement)
     expected_reading = ctypes.sizeof(_ReadingElement)
-    if header.dwSizeOfSensorElement != expected_sensor:
+    if header.dwSizeOfSensorElement < expected_sensor:
         raise HWiNFOUnavailable(
-            "Unexpected sensor element size %d (expected %d); HWiNFO's shared memory "
-            "layout has changed and this reader needs updating."
-            % (header.dwSizeOfSensorElement, expected_sensor)
+            "Sensor element is %d bytes, smaller than the %d this reader needs; "
+            "HWiNFO's shared memory layout has changed incompatibly and this reader "
+            "needs updating." % (header.dwSizeOfSensorElement, expected_sensor)
         )
-    if header.dwSizeOfReadingElement != expected_reading:
+    if header.dwSizeOfReadingElement < expected_reading:
         raise HWiNFOUnavailable(
-            "Unexpected reading element size %d (expected %d); HWiNFO's shared memory "
-            "layout has changed and this reader needs updating."
-            % (header.dwSizeOfReadingElement, expected_reading)
+            "Reading element is %d bytes, smaller than the %d this reader needs; "
+            "HWiNFO's shared memory layout has changed incompatibly and this reader "
+            "needs updating." % (header.dwSizeOfReadingElement, expected_reading)
         )
 
     total = (header.dwOffsetOfReadingSection
