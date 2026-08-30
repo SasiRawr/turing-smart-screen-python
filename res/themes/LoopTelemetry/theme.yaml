@@ -13,6 +13,7 @@ author: "SasiRawr"
 # they sweep a simulated value and the status line reads SIMULATED.
 
 display:
+  DISPLAY_SIZE: 3.5"
   DISPLAY_ORIENTATION: landscape
   DISPLAY_RGB_LED: 40, 120, 150
 
