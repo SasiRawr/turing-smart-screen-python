@@ -1,3 +1,14 @@
+> **This branch is frozen.**
+>
+> `claude/loop-telemetry` is preserved as a reference point at tag
+> `pre-migration-2026-08-30` and is no longer developed. The work it held —
+> an HWiNFO shared-memory sensor backend, a headless attributed renderer, and
+> a PySide6 theme designer — continues in a separate private project.
+>
+> This fork is kept for upstream tracking only. Issues and pull requests for
+> the original project belong upstream at
+> [mathoudebine/turing-smart-screen-python](https://github.com/mathoudebine/turing-smart-screen-python).
+
 # ![Icon](https://raw.githubusercontent.com/mathoudebine/turing-smart-screen-python/main/res/icons/monitor-icon-17865/24.png) turing-smart-screen-python
 
 > [!WARNING]
