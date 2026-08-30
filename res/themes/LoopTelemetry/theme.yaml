@@ -163,7 +163,13 @@ STATS:
         SHOW: True
         X: 176
         Y: 212
-        WIDTH: 172
+        # 148, not 172: the delta-T radial is centred at X 372 with RADIUS 44,
+        # so it occupies x 328-416. At 172 these graphs reached 348 and overlapped
+        # it by 20 px. The panel does not composite -- every element repaints an
+        # opaque box over its own bounds at its own INTERVAL -- so overlapping
+        # elements erase each other continuously on real hardware while looking
+        # perfect in a single-pass preview. 148 leaves a 4 px gap.
+        WIDTH: 148
         HEIGHT: 44
         MIN_VALUE: 20
         MAX_VALUE: 50
@@ -188,7 +194,7 @@ STATS:
         SHOW: False
         X: 176
         Y: 212
-        WIDTH: 172
+        WIDTH: 148
         HEIGHT: 44
         MIN_VALUE: 20
         MAX_VALUE: 50
@@ -213,7 +219,7 @@ STATS:
         SHOW: False
         X: 176
         Y: 264
-        WIDTH: 172
+        WIDTH: 148
         HEIGHT: 44
         MIN_VALUE: 20
         MAX_VALUE: 50

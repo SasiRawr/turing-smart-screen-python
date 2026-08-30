@@ -365,6 +365,11 @@ def _reset_render_state():
 def load_theme_document(theme_dir) -> dict:
     """Parse a theme.yaml the way the monitor does, without load_theme()'s exit."""
     from pathlib import Path
+    if not _ready:
+        # Callable before the first render(): the parser lives on the config
+        # module, which only exists once the pipeline is bootstrapped.
+        with _lock:
+            _bootstrap()
     theme_dir = Path(theme_dir)
     data = _config.load_yaml(theme_dir / "theme.yaml")
     if not isinstance(data, dict):
