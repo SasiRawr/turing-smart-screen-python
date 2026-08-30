@@ -274,8 +274,27 @@ class DesignerWindow(QMainWindow):
         if current is not None:
             self._load_theme(current.text())
 
+    def _sync_theme_selection(self, name: str) -> None:
+        """Keep the THEMES highlight on whatever is actually loaded.
+
+        _load_theme() can be called without going through the list -- from the
+        command line argument, or from a test -- which would otherwise leave the
+        highlight pointing at the previous theme while the canvas shows the new
+        one. Signals are blocked so this cannot recurse back into a load.
+        """
+        items = self._theme_list.findItems(name, Qt.MatchExactly)
+        if not items:
+            return
+        row = self._theme_list.row(items[0])
+        if row == self._theme_list.currentRow():
+            return
+        self._theme_list.blockSignals(True)
+        self._theme_list.setCurrentRow(row)
+        self._theme_list.blockSignals(False)
+
     def _load_theme(self, name: str, fit: bool = True) -> None:
         self._timer.stop()
+        self._sync_theme_selection(name)
         self._theme_name = name
         self._theme_dir = model.themes_dir() / name
         self._dirty = False
