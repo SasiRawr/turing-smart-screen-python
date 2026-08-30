@@ -78,7 +78,11 @@ class RenderResult(NamedTuple):
 
 # Everything below is populated by _bootstrap() on first render, so that merely
 # importing this module has no side effects.
-_lock = threading.Lock()
+# Reentrant on purpose. render() holds this while calling load_theme_document(),
+# which itself takes the lock to bootstrap when called first. That is safe today
+# only because render() bootstraps before it parses; a plain Lock would turn any
+# future reordering into a silent hang rather than an error.
+_lock = threading.RLock()
 _ready = False
 _config = None
 _display = None
@@ -275,6 +279,15 @@ def _bootstrap():
     # display.lcd at runtime, so this one rebind redirects the whole pipeline.
     try:
         _display.lcd.closeSerial()
+    except Exception:
+        pass
+    try:
+        # closeSerial() only calls shutdown(), which stops serve_forever but
+        # leaves the listening socket on port 5678 open -- it surfaces as a
+        # ResourceWarning and would block a later process from binding the port.
+        server = getattr(_display.lcd, "webServer", None)
+        if server is not None:
+            server.server_close()
     except Exception:
         pass
     _display.lcd = EditorLcd(320, 480)
