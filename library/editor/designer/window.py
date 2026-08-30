@@ -17,22 +17,31 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """Main window: theme picker + element tree | preview canvas + problem bar |
-inspector. Owns the theme document and the render loop; the canvas and
-inspector are dumb views over it."""
+inspector. Owns the theme document, the undo stack and the render loop; the
+canvas and inspector are views that emit edit intents.
+
+Every edit flows through one path: build a Command, push it on the UndoStack
+(which applies it to the document), then _after_document_change() re-renders
+and refreshes the inspector. Dragging is the one exception while the button
+is down -- the document is mutated directly so the preview follows the mouse
+through the real render pipeline -- and mouse release converts the whole
+gesture into a single MoveElement command, so one Ctrl+Z returns the element
+to where the drag started."""
 
 import time
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QFrame, QLabel, QListWidget, QListWidgetItem,
-                               QMainWindow, QSplitter, QStatusBar, QToolBar,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QFrame, QInputDialog, QLabel, QListWidget,
+                               QListWidgetItem, QMainWindow, QMessageBox,
+                               QSplitter, QStatusBar, QToolBar, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from library.editor import renderer
-from library.editor.designer import model, style
+from library.editor.designer import commands, model, style
 from library.editor.designer.canvas import DesignerCanvas
+from library.editor.designer.document import ThemeDocument
 from library.editor.designer.inspector import Inspector
 
 ElementId = Tuple[str, ...]
@@ -63,7 +72,9 @@ class DesignerWindow(QMainWindow):
 
         # Document state
         self._theme_name: Optional[str] = None
-        self._doc: Optional[dict] = None
+        self._document: Optional[ThemeDocument] = None
+        self._doc: Optional[dict] = None          # == self._document.data
+        self._undo: Optional[commands.UndoStack] = None
         self._groups: List[Tuple[str, List[model.ElementInfo]]] = []
         self._info_by_id: Dict[ElementId, model.ElementInfo] = {}
         self._result: Optional[renderer.RenderResult] = None
@@ -77,8 +88,10 @@ class DesignerWindow(QMainWindow):
         # both must outlive the QImage or Qt reads freed memory (hard crash).
         self._frame_bytes: Optional[bytes] = None
         self._frame_qimage: Optional[QImage] = None
-        # Drag bookkeeping
+        # Drag bookkeeping: numeric origin for delta math, raw old values
+        # (which may be commands.MISSING) for the single command on release.
         self._drag_origin: Optional[Tuple[int, int]] = None
+        self._drag_old: Optional[Tuple[object, object]] = None
 
         self._build_ui()
         self._build_shortcuts()
@@ -92,6 +105,37 @@ class DesignerWindow(QMainWindow):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
+        # ---- menus (they own the edit/save actions and their shortcuts)
+        file_menu = self.menuBar().addMenu("&File")
+        self._act_save = QAction("&Save", self)
+        self._act_save.setShortcut(QKeySequence("Ctrl+S"))
+        self._act_save.triggered.connect(self._save)
+        file_menu.addAction(self._act_save)
+        self._act_save_as = QAction("Save &As (Duplicate Theme)...", self)
+        self._act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._act_save_as.triggered.connect(self._save_as)
+        file_menu.addAction(self._act_save_as)
+        file_menu.addSeparator()
+        self._act_revert = QAction("&Revert to Saved", self)
+        self._act_revert.setToolTip("Reload the theme from disk, discarding unsaved edits")
+        self._act_revert.triggered.connect(self._revert)
+        self._act_revert.setEnabled(False)
+        file_menu.addAction(self._act_revert)
+
+        edit_menu = self.menuBar().addMenu("&Edit")
+        self._act_undo = QAction("&Undo", self)
+        self._act_undo.setShortcut(QKeySequence("Ctrl+Z"))
+        self._act_undo.triggered.connect(self._undo_edit)
+        self._act_undo.setEnabled(False)
+        edit_menu.addAction(self._act_undo)
+        self._act_redo = QAction("&Redo", self)
+        # Both common redo chords.
+        self._act_redo.setShortcuts([QKeySequence("Ctrl+Shift+Z"),
+                                     QKeySequence("Ctrl+Y")])
+        self._act_redo.triggered.connect(self._redo_edit)
+        self._act_redo.setEnabled(False)
+        edit_menu.addAction(self._act_redo)
+
         # ---- toolbar
         toolbar = QToolBar()
         toolbar.setMovable(False)
@@ -103,6 +147,11 @@ class DesignerWindow(QMainWindow):
         toolbar.addWidget(self._theme_label)
         toolbar.addSeparator()
 
+        toolbar.addAction(self._act_save)
+        toolbar.addAction(self._act_undo)
+        toolbar.addAction(self._act_redo)
+        toolbar.addSeparator()
+
         self._act_refresh = toolbar.addAction("Refresh", self._rerender)
         self._act_refresh.setToolTip("Re-render the preview now (F5)")
         self._act_auto = toolbar.addAction("Live preview")
@@ -110,9 +159,6 @@ class DesignerWindow(QMainWindow):
         self._act_auto.setChecked(True)
         self._act_auto.setToolTip("Re-render every second so values move")
         self._act_auto.toggled.connect(self._on_auto_toggled)
-        self._act_revert = toolbar.addAction("Revert", self._revert)
-        self._act_revert.setToolTip("Reload the theme from disk, discarding in-memory moves")
-        self._act_revert.setEnabled(False)
         toolbar.addSeparator()
 
         toolbar.addAction("Zoom -", self._zoom_out_act).setToolTip("Zoom out (Ctrl+-)")
@@ -177,6 +223,7 @@ class DesignerWindow(QMainWindow):
 
         # ---- right: inspector
         self.inspector = Inspector()
+        self.inspector.propertyEdited.connect(self._on_property_edited)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
@@ -292,33 +339,60 @@ class DesignerWindow(QMainWindow):
         self._theme_list.setCurrentRow(row)
         self._theme_list.blockSignals(False)
 
-    def _load_theme(self, name: str, fit: bool = True) -> None:
+    def _confirm_discard(self) -> bool:
+        """True when it is OK to drop the current document state."""
+        if not self._dirty or self._document is None:
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved changes",
+            "'%s' has unsaved changes. Save them first?" % self._theme_name,
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save)
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            return self._save()
+        return True
+
+    def _load_theme(self, name: str, fit: bool = True, force: bool = False) -> None:
+        if not force and name != self._theme_name and not self._confirm_discard():
+            # Cancelled: snap the list highlight back to the loaded theme.
+            if self._theme_name:
+                self._sync_theme_selection(self._theme_name)
+            return
         self._timer.stop()
         self._sync_theme_selection(name)
         self._theme_name = name
         self._theme_dir = model.themes_dir() / name
         self._dirty = False
-        self._act_revert.setEnabled(False)
         self._selected = None
         # Reverting keeps the user's zoom/pan; switching themes refits.
         self._needs_fit = fit
         self._theme_label.setText(name)
         try:
-            self._doc = renderer.load_theme_document(self._theme_dir)
+            self._document = ThemeDocument(self._theme_dir)
         except Exception as exc:
+            self._document = None
             self._doc = None
+            self._undo = None
             self._groups = []
             self._info_by_id = {}
             self._tree.clear()
             self._show_fatal("theme.yaml could not be parsed: %s" % exc)
+            self._on_undo_stack_changed()
             self._update_title()
             return
+        self._doc = self._document.data
+        self._undo = commands.UndoStack(self._doc,
+                                        on_change=self._on_undo_stack_changed)
         self._groups = model.enumerate_elements(self._doc)
         self._info_by_id = model.flatten(self._groups)
         self._populate_tree()
         self.inspector.set_element(None, None)
         self.canvas.set_selected(None)
-        self._update_title()
+        self._on_undo_stack_changed()
         self._rerender()
         if self._act_auto.isChecked():
             self._timer.start()
@@ -326,7 +400,7 @@ class DesignerWindow(QMainWindow):
     def _revert(self) -> None:
         if self._theme_name:
             selected = self._selected
-            self._load_theme(self._theme_name, fit=False)
+            self._load_theme(self._theme_name, fit=False, force=True)
             if selected in self._info_by_id:
                 self._select_element(selected)
 
@@ -351,6 +425,124 @@ class DesignerWindow(QMainWindow):
                 group_item.addChild(child)
             group_item.setExpanded(True)
         self._syncing = False
+
+    # --------------------------------------------------------- edit routing
+
+    def _path_for_node(self, node: dict) -> Optional[ElementId]:
+        """Which element a (node, key) edit belongs to. The inspector edits
+        the selected element, so check that first; fall back to a scan."""
+        if self._selected is not None:
+            info = self._info_by_id.get(self._selected)
+            if info is not None and info.node is node:
+                return self._selected
+        for element_id, info in self._info_by_id.items():
+            if info.node is node:
+                return element_id
+        return None
+
+    def _on_property_edited(self, node: dict, key: str, value) -> None:
+        if self._undo is None:
+            return
+        path = self._path_for_node(node)
+        if path is None:
+            return
+        old = node[key] if key in node else commands.MISSING
+        self._undo.push(commands.SetProperty(path, key, old, value))
+        self._after_document_change()
+
+    def _undo_edit(self) -> None:
+        if self._undo is not None and self._undo.undo() is not None:
+            self._after_document_change()
+
+    def _redo_edit(self) -> None:
+        if self._undo is not None and self._undo.redo() is not None:
+            self._after_document_change()
+
+    def _after_document_change(self) -> None:
+        """Document content changed (command applied, undone or redone)."""
+        self._refresh_element_metadata()
+        self._rerender()
+
+    def _refresh_element_metadata(self) -> None:
+        """SHOW/INTERVAL edits change the element list's labels and the
+        ElementInfo snapshots, so rebuild them from the live document. Node
+        references stay valid: enumerate walks the same dicts."""
+        self._groups = model.enumerate_elements(self._doc)
+        self._info_by_id = model.flatten(self._groups)
+        self._populate_tree()
+        if self._selected is not None:
+            if self._selected in self._info_by_id:
+                item = self._find_tree_item(self._selected)
+                if item is not None:
+                    self._syncing = True
+                    item.setSelected(True)
+                    self._syncing = False
+            else:
+                self._selected = None
+
+    def _on_undo_stack_changed(self) -> None:
+        has_stack = self._undo is not None
+        can_undo = has_stack and self._undo.can_undo()
+        can_redo = has_stack and self._undo.can_redo()
+        self._act_undo.setEnabled(can_undo)
+        self._act_redo.setEnabled(can_redo)
+        self._act_undo.setText("&Undo %s" % self._undo.undo_text() if can_undo else "&Undo")
+        self._act_redo.setText("&Redo %s" % self._undo.redo_text() if can_redo else "&Redo")
+        self._dirty = has_stack and not self._undo.is_clean()
+        self._act_revert.setEnabled(self._dirty)
+        self._act_save.setEnabled(has_stack)
+        self._act_save_as.setEnabled(has_stack)
+        self._update_title()
+        self._refresh_state_chip()
+
+    # -------------------------------------------------------------- saving
+
+    def _save(self) -> bool:
+        if self._document is None:
+            return False
+        try:
+            self._document.save()
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed",
+                                 "Could not save %s:\n%s"
+                                 % (self._document.yaml_path, exc))
+            return False
+        if self._undo is not None:
+            self._undo.set_clean()
+        self.statusBar().showMessage("Saved %s" % self._document.yaml_path, 4000)
+        return True
+
+    def _save_as(self) -> None:
+        if self._document is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self, "Duplicate theme",
+            "Copy '%s' (assets and current edits included) to:" % self._theme_name,
+            text="%s Copy" % self._theme_name)
+        if not accepted or not name.strip():
+            return
+        self._duplicate_to(name.strip())
+
+    def _duplicate_to(self, name: str) -> bool:
+        """Copy the theme directory under a new name and switch to the copy.
+        Separated from the dialog so it is scriptable/testable."""
+        try:
+            self._document.duplicate(name)
+        except Exception as exc:
+            QMessageBox.critical(self, "Duplicate failed", str(exc))
+            return False
+        # The copy holds the current edits; the original stays as saved on
+        # disk, so switching must not raise the unsaved-changes prompt.
+        if self._undo is not None:
+            self._undo.set_clean()
+        self._populate_theme_list(name)  # re-lists and loads the new theme
+        return True
+
+    def closeEvent(self, event) -> None:
+        if self._confirm_discard():
+            event.accept()
+        else:
+            event.ignore()
 
     # ------------------------------------------------------------ rendering
 
@@ -393,7 +585,8 @@ class DesignerWindow(QMainWindow):
             self._needs_fit = False
             QTimer.singleShot(0, self.canvas.fit_to_window)
 
-        # Keep the inspector's bbox line current for the selected element.
+        # Keep the inspector current for the selected element. Same-element
+        # calls refresh values in place, so an open editor survives.
         if self._selected is not None:
             info = self._info_by_id.get(self._selected)
             if info is not None:
@@ -469,8 +662,10 @@ class DesignerWindow(QMainWindow):
         # Re-polish so the objectName-based colour change takes effect.
         self._chip_problems.style().unpolish(self._chip_problems)
         self._chip_problems.style().polish(self._chip_problems)
-        self._chip_state.setText(
-            "modified (in memory only)" if self._dirty else "unmodified")
+        self._refresh_state_chip()
+
+    def _refresh_state_chip(self) -> None:
+        self._chip_state.setText("modified (unsaved)" if self._dirty else "saved")
 
     def _update_title(self) -> None:
         name = self._theme_name or "no theme"
@@ -546,40 +741,76 @@ class DesignerWindow(QMainWindow):
         except (TypeError, ValueError):
             return None
 
-    def _set_element_position(self, element_id: ElementId, x: int, y: int) -> None:
+    def _raw_position(self, element_id: ElementId) -> Optional[Tuple[object, object]]:
+        """X/Y exactly as stored, commands.MISSING when the key is absent, so
+        undoing a move on an element that had no X/Y removes them again."""
+        info = self._info_by_id.get(element_id)
+        if info is None:
+            return None
+        node = info.node
+        return (node["X"] if "X" in node else commands.MISSING,
+                node["Y"] if "Y" in node else commands.MISSING)
+
+    def _clamp_position(self, x: int, y: int) -> Tuple[int, int]:
+        width, height = (self._result.image.size if self._result else (480, 320))
+        return max(0, min(int(x), width - 1)), max(0, min(int(y), height - 1))
+
+    def _apply_position(self, element_id: ElementId, x: int, y: int) -> None:
+        """Directly move an element and re-render. Used mid-drag only: the
+        gesture becomes one command on release."""
         info = self._info_by_id.get(element_id)
         if info is None:
             return
-        width, height = (self._result.image.size if self._result else (480, 320))
-        info.node["X"] = max(0, min(int(x), width - 1))
-        info.node["Y"] = max(0, min(int(y), height - 1))
-        if not self._dirty:
-            self._dirty = True
-            self._act_revert.setEnabled(True)
-            self._update_title()
+        info.node["X"], info.node["Y"] = self._clamp_position(x, y)
         self._rerender()
 
     def _nudge(self, dx: int, dy: int) -> None:
-        if self._selected is None:
+        if self._selected is None or self._undo is None:
             return
         position = self._element_position(self._selected)
-        if position is None:
+        old = self._raw_position(self._selected)
+        if position is None or old is None:
             return
-        self._set_element_position(self._selected, position[0] + dx, position[1] + dy)
+        new = self._clamp_position(position[0] + dx, position[1] + dy)
+        if new == position:
+            return
+        info = self._info_by_id.get(self._selected)
+        label = info.label if info is not None else ""
+        # coalesce=True: holding an arrow key stays ONE undo step.
+        self._undo.push(commands.MoveElement(self._selected, old, new, label),
+                        coalesce=True)
+        self._after_document_change()
 
     def _on_move_started(self, element_id) -> None:
-        self._drag_origin = self._element_position(tuple(element_id))
+        element_id = tuple(element_id)
+        self._drag_origin = self._element_position(element_id)
+        self._drag_old = self._raw_position(element_id)
         self._timer.stop()  # the drag itself re-renders continuously
 
     def _on_move_delta(self, element_id, dx: int, dy: int) -> None:
         if self._drag_origin is None:
             return
-        self._set_element_position(tuple(element_id),
-                                   self._drag_origin[0] + dx,
-                                   self._drag_origin[1] + dy)
+        self._apply_position(tuple(element_id),
+                             self._drag_origin[0] + dx,
+                             self._drag_origin[1] + dy)
 
-    def _on_move_finished(self, _element_id) -> None:
+    def _on_move_finished(self, element_id) -> None:
+        element_id = tuple(element_id)
+        origin, old = self._drag_origin, self._drag_old
         self._drag_origin = None
+        self._drag_old = None
+        final = self._element_position(element_id)
+        if (self._undo is not None and origin is not None and old is not None
+                and final is not None and final != origin):
+            info = self._info_by_id.get(element_id)
+            label = info.label if info is not None else ""
+            # The document already holds the final position: record the whole
+            # drag as one already-applied command so a single undo restores
+            # the pre-drag position.
+            self._undo.push(
+                commands.MoveElement(element_id, old, final, label),
+                already_applied=True)
+            self._after_document_change()
         if self._act_auto.isChecked():
             self._timer.start()
 
